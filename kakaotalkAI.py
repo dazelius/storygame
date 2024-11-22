@@ -1371,40 +1371,83 @@ def display_conversation_flows(df: pd.DataFrame):
     """대화 흐름 분석 결과 표시"""
     st.markdown("## 🌊 주요 대화 흐름")
     
-    # 세션 상태 초기화
+    # 초기 데이터 범위 설정
+    if 'date_range' not in st.session_state:
+        date_range = [df['timestamp'].min(), df['timestamp'].max()]
+        st.session_state.date_range = date_range
+    
+    # 시간 범위 선택기
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "시작 날짜",
+            value=st.session_state.date_range[0].date(),
+            min_value=df['timestamp'].min().date(),
+            max_value=df['timestamp'].max().date(),
+            key='start_date'
+        )
+    with col2:
+        end_date = st.date_input(
+            "종료 날짜",
+            value=st.session_state.date_range[1].date(),
+            min_value=df['timestamp'].min().date(),
+            max_value=df['timestamp'].max().date(),
+            key='end_date'
+        )
+    
+    # 시간 범위로 데이터 필터링
+    filtered_df = df[
+        (df['timestamp'].dt.date >= start_date) &
+        (df['timestamp'].dt.date <= end_date)
+    ]
+    
+    # 분석 기준 설정 (세션 상태 유지)
     if 'window_minutes' not in st.session_state:
         st.session_state.window_minutes = 30
     if 'min_messages' not in st.session_state:
         st.session_state.min_messages = 10
     
-    # 분석 기준 설정
-    col1, col2 = st.columns(2)
-    with col1:
-        window_minutes = st.slider("대화 구간 길이 (분)", 
-                                 min_value=10, 
-                                 max_value=60, 
-                                 value=st.session_state.window_minutes, 
-                                 step=5,
-                                 key='window_slider')
-    with col2:
-        min_messages = st.slider("최소 메시지 수", 
-                               min_value=5, 
-                               max_value=30, 
-                               value=st.session_state.min_messages, 
-                               step=5,
-                               key='messages_slider')
-    
-    # 값이 변경되었을 때만 상태 업데이트
-    if window_minutes != st.session_state.window_minutes or min_messages != st.session_state.min_messages:
-        st.session_state.window_minutes = window_minutes
-        st.session_state.min_messages = min_messages
-        st.rerun()
+    col3, col4 = st.columns(2)
+    with col3:
+        window_minutes = st.slider(
+            "대화 구간 길이 (분)", 
+            min_value=10, 
+            max_value=60, 
+            value=st.session_state.window_minutes, 
+            step=5,
+            key='window_minutes_slider'
+        )
+    with col4:
+        min_messages = st.slider(
+            "최소 메시지 수", 
+            min_value=5, 
+            max_value=30, 
+            value=st.session_state.min_messages, 
+            step=5,
+            key='min_messages_slider'
+        )
     
     # 분석 실행
-    flows = analyze_conversation_flows(df, window_minutes, min_messages)
+    @st.cache_data(ttl=3600)
+    def get_flows(df_hash: str, start: pd.Timestamp, end: pd.Timestamp, window: int, min_msg: int):
+        """캐시된 대화 흐름 분석"""
+        filtered_data = df[
+            (df['timestamp'] >= start) &
+            (df['timestamp'] <= end)
+        ]
+        return analyze_conversation_flows(filtered_data, window, min_msg)
+    
+    # 데이터 해시 생성
+    df_hash = pd.util.hash_pandas_object(df).sum()
+    
+    # 날짜를 타임스탬프로 변환
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    
+    flows = get_flows(df_hash, start_ts, end_ts, window_minutes, min_messages)
     
     if not flows:
-        st.info("분석할 대화 구간을 찾을 수 없습니다.")
+        st.info("선택한 기간에 분석할 대화 구간이 없습니다.")
         return
     
     # 대화 밀집도 시각화
@@ -1424,95 +1467,119 @@ def display_conversation_flows(df: pd.DataFrame):
             color=intensity_data['intensity'],
             colorscale='Viridis',
             showscale=True,
-            colorbar=dict(title="분당 메시지 수")
+            colorbar=dict(
+                title="분당 메시지 수",
+                titleside="right",
+                titlefont=dict(color='white'),
+                tickfont=dict(color='white')
+            )
         ),
-        text=[f"메시지 수: {m}" for m in intensity_data['messages']],
-        hovertemplate="시간: %{x}<br>밀집도: %{y:.1f}/분<br>%{text}<extra></extra>"
+        text=[f"메시지 수: {m}<br>시간: {t:%H:%M}" 
+              for m, t in zip(intensity_data['messages'], intensity_data['start_time'])],
+        hovertemplate="%{text}<br>밀집도: %{y:.1f}/분<extra></extra>"
     ))
     
     fig.update_layout(
-        title="대화 밀집도 분포",
-        xaxis_title="시간",
-        yaxis_title="메시지 밀집도 (분당)",
+        title=dict(
+            text="대화 밀집도 분포",
+            font=dict(color='white')
+        ),
+        xaxis=dict(
+            title="시간",
+            gridcolor='rgba(255,255,255,0.1)',
+            tickfont=dict(color='white'),
+            titlefont=dict(color='white')
+        ),
+        yaxis=dict(
+            title="메시지 밀집도 (분당)",
+            gridcolor='rgba(255,255,255,0.1)',
+            tickfont=dict(color='white'),
+            titlefont=dict(color='white')
+        ),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='white')
+        hoverlabel=dict(
+            bgcolor='rgba(255,255,255,0.9)',
+            font=dict(color='black')
+        )
     )
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # 주요 대화 구간 표시
-    st.markdown("### 🎯 주요 대화 구간")
-    
+    # 대화 구간 목록
     for idx, flow in enumerate(flows, 1):
         with st.expander(
-            f"**{flow['start_time'].strftime('%Y-%m-%d %H:%M')} ~ {flow['end_time'].strftime('%H:%M')}** "
-            f"({flow['duration_mins']}분 | {flow['message_count']}개 메시지 | {flow['participants']}명 참여)"):
-            
+            f"**{flow['start_time'].strftime('%H:%M')} ~ {flow['end_time'].strftime('%H:%M')}** "
+            f"({flow['duration_mins']}분 | {flow['message_count']}개 메시지 | {flow['participants']}명 참여)"
+        ):
             # 키워드 표시
             st.markdown("#### 📌 주요 키워드")
-            keyword_cols = st.columns(len(flow['keywords']))
-            for col, (word, count) in zip(keyword_cols, flow['keywords']):
+            cols = st.columns(len(flow['keywords']))
+            for col, (word, count) in zip(cols, flow['keywords']):
                 col.markdown(f"""
                 <div style="
                     background-color: rgba(255,105,180,0.1);
                     padding: 10px;
                     border-radius: 5px;
                     text-align: center;
+                    margin: 5px 0;
                 ">
                     <div style="font-size: 0.9em;">{word}</div>
                     <div style="color: #FF69B4; font-weight: bold;">{count}회</div>
                 </div>
                 """, unsafe_allow_html=True)
             
-            # 대화 흐름 요약
-            st.markdown("#### 💬 대화 흐름")
-            
-            # 시작 부분
-            st.markdown("**대화 시작**")
-            for msg in flow['summary']['start']:
-                st.markdown(f"""
-                <div style="
-                    padding: 5px 10px;
-                    margin: 2px 0;
-                    background-color: rgba(255,255,255,0.05);
-                    border-radius: 5px;
-                ">
-                    <span style="color: #FF69B4;">{msg['time']}</span> - 
-                    <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # 주요 포인트
-            if flow['summary']['key_points']:
-                st.markdown("**주요 논의**")
-                for msg in flow['summary']['key_points'][:3]:  # 상위 3개만
-                    st.markdown(f"""
-                    <div style="
-                        padding: 5px 10px;
-                        margin: 2px 0;
-                        background-color: rgba(255,255,255,0.1);
-                        border-radius: 5px;
-                    ">
-                        <span style="color: #FF69B4;">{msg['time']}</span> - 
-                        <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # 대화 마무리
-            st.markdown("**대화 마무리**")
-            for msg in flow['summary']['end']:
-                st.markdown(f"""
-                <div style="
-                    padding: 5px 10px;
-                    margin: 2px 0;
-                    background-color: rgba(255,255,255,0.05);
-                    border-radius: 5px;
-                ">
-                    <span style="color: #FF69B4;">{msg['time']}</span> - 
-                    <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
-                </div>
-                """, unsafe_allow_html=True)
+            # 대화 요약
+            if 'summary' in flow and flow['summary']:
+                st.markdown("#### 💬 대화 흐름")
+                
+                # 시작 부분
+                if flow['summary'].get('start'):
+                    st.markdown("**대화 시작**")
+                    for msg in flow['summary']['start']:
+                        st.markdown(f"""
+                        <div style="
+                            padding: 5px 10px;
+                            margin: 2px 0;
+                            background-color: rgba(255,255,255,0.05);
+                            border-radius: 5px;
+                        ">
+                            <span style="color: #FF69B4;">{msg['time']}</span> - 
+                            <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
+                        </div>
+                        """, unsafe_allow_html=True)
+                
+                # 주요 대화
+                if flow['summary'].get('key_points'):
+                    st.markdown("**주요 논의**")
+                    for msg in flow['summary']['key_points'][:3]:
+                        st.markdown(f"""
+                        <div style="
+                            padding: 5px 10px;
+                            margin: 2px 0;
+                            background-color: rgba(255,255,255,0.1);
+                            border-radius: 5px;
+                        ">
+                            <span style="color: #FF69B4;">{msg['time']}</span> - 
+                            <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
+                        </div>
+                        """, unsafe_allow_html=True)
+                
+                # 마무리
+                if flow['summary'].get('end'):
+                    st.markdown("**대화 마무리**")
+                    for msg in flow['summary']['end']:
+                        st.markdown(f"""
+                        <div style="
+                            padding: 5px 10px;
+                            margin: 2px 0;
+                            background-color: rgba(255,255,255,0.05);
+                            border-radius: 5px;
+                        ">
+                            <span style="color: #FF69B4;">{msg['time']}</span> - 
+                            <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
+                        </div>
+                        """, unsafe_allow_html=True)
             
             # 대화 분위기
             st.markdown(f"""
