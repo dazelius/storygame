@@ -1232,92 +1232,103 @@ def find_highlight_messages(df: pd.DataFrame, target_names: list, my_name: str) 
 
 def analyze_conversation_flows(df: pd.DataFrame, window_minutes: int = 30, min_messages: int = 10) -> list:
     """대화 밀집도가 높은 구간의 대화 흐름 분석"""
-    try:
-        # 시간순 정렬
-        df = df.sort_values('timestamp')
-        
-        # 시간 윈도우 설정 (기본 30분)
-        window_td = pd.Timedelta(minutes=window_minutes)
-        
-        # 대화 세션 찾기
-        sessions = []
-        current_messages = []
-        session_start = df['timestamp'].iloc[0]
-        
-        for _, row in df.iterrows():
-            if row['timestamp'] - session_start <= window_td:
-                current_messages.append(row)
-            else:
-                if len(current_messages) >= min_messages:
-                    sessions.append(current_messages)
-                current_messages = [row]
-                session_start = row['timestamp']
-        
-        # 마지막 세션 처리
-        if len(current_messages) >= min_messages:
-            sessions.append(current_messages)
-        
-        # 각 세션 분석
-        conversation_flows = []
-        
-        for session_messages in sessions:
-            session_df = pd.DataFrame(session_messages)
+    
+    # 캐시 키 생성 (데이터프레임의 크기와 분석 파라미터 기반)
+    @st.cache_data(ttl=3600)
+    def analyze_flows_cached(data_key: str, window_mins: int, min_msgs: int) -> list:
+        try:
+            # 시간순 정렬
+            df_sorted = df.sort_values('timestamp')
             
-            # 세션 정보 수집
-            start_time = session_df['timestamp'].min()
-            end_time = session_df['timestamp'].max()
-            duration = (end_time - start_time).total_seconds() / 60
-            participants = session_df['name'].nunique()
-            msg_count = len(session_df)
-            intensity = msg_count / duration  # 분당 메시지 수
+            # 시간 윈도우 설정
+            window_td = pd.Timedelta(minutes=window_mins)
             
-            # 주요 키워드 추출
-            text = ' '.join(session_df['message'].astype(str))
-            words = text.split()
-            word_counter = Counter(words)
-            # 불용어 제거
-            stopwords = {'그래서', '나는', '지금', '그런데', '하지만', '그리고', '그럼', '네', '예', '음', '아', 
-                        '저도', '근데', '저는', '제가', '좀', '이제', '그냥', '진짜', '아니', '그건', '이거', 
-                        '그거', '뭐', '누가', '왜', '어디', '언제', '이제', '저희', '우리', '이런', '저런', 
-                        '이렇게', '저렇게', '[이모티콘]', '사진', '삭제된', '메시지입니다'}
-            keywords = [(word, count) for word, count in word_counter.most_common(5) 
-                       if word not in stopwords and len(word) > 1]
+            # 대화 세션 찾기
+            sessions = []
+            current_messages = []
+            session_start = df_sorted['timestamp'].iloc[0]
             
-            # 대화 요약
-            summary = summarize_conversation(session_df)
+            for _, row in df_sorted.iterrows():
+                if row['timestamp'] - session_start <= window_td:
+                    current_messages.append(row)
+                else:
+                    if len(current_messages) >= min_msgs:
+                        sessions.append(current_messages)
+                    current_messages = [row]
+                    session_start = row['timestamp']
             
-            # 대화 분위기 분석
-            emotion_pattern = re.compile(r'[ㅋㅎ]{2,}|[ㅠㅜ]{2,}|[!?]{2,}|😊|😄|😢|😭|😡|❤️|👍|🙏')
-            emotions = []
-            for msg in session_df['message']:
-                if isinstance(msg, str):
-                    if re.search(r'[ㅋㅎ]{2,}|😊|😄|👍|❤️', msg):
-                        emotions.append('긍정')
-                    elif re.search(r'[ㅠㅜ]{2,}|😢|😭|😡', msg):
-                        emotions.append('부정')
-                    elif re.search(r'[!?]{2,}', msg):
-                        emotions.append('강조')
+            # 마지막 세션 처리
+            if len(current_messages) >= min_msgs:
+                sessions.append(current_messages)
             
-            dominant_emotion = max(set(emotions), key=emotions.count) if emotions else '중립'
+            # 각 세션 분석
+            conversation_flows = []
             
-            conversation_flows.append({
-                'start_time': start_time,
-                'end_time': end_time,
-                'duration_mins': round(duration, 1),
-                'participants': participants,
-                'message_count': msg_count,
-                'intensity': round(intensity, 1),
-                'keywords': keywords,
-                'summary': summary,
-                'emotion': dominant_emotion
-            })
-        
-        # 메시지 수 기준으로 정렬
-        return sorted(conversation_flows, key=lambda x: x['message_count'], reverse=True)
-        
-    except Exception as e:
-        st.error(f"대화 흐름 분석 중 오류 발생: {str(e)}")
-        return []
+            for session_messages in sessions:
+                session_df = pd.DataFrame(session_messages)
+                
+                # 세션 정보 수집
+                start_time = session_df['timestamp'].min()
+                end_time = session_df['timestamp'].max()
+                duration = (end_time - start_time).total_seconds() / 60
+                participants = session_df['name'].nunique()
+                msg_count = len(session_df)
+                intensity = msg_count / duration
+                
+                # 주요 키워드 추출
+                text = ' '.join(session_df['message'].astype(str))
+                words = text.split()
+                word_counter = Counter(words)
+                
+                # 불용어 제거
+                stopwords = {'그래서', '나는', '지금', '그런데', '하지만', '그리고', '그럼', '네', '예', '음', '아', 
+                            '저도', '근데', '저는', '제가', '좀', '이제', '그냥', '진짜', '아니', '그건', '이거', 
+                            '그거', '뭐', '누가', '왜', '어디', '언제', '이제', '저희', '우리', '이런', '저런', 
+                            '이렇게', '저렇게', '[이모티콘]', '사진', '삭제된', '메시지입니다'}
+                keywords = [(word, count) for word, count in word_counter.most_common(5) 
+                           if word not in stopwords and len(word) > 1]
+                
+                # 대화 요약
+                summary = summarize_conversation(session_df)
+                
+                # 대화 분위기 분석
+                emotion_pattern = re.compile(r'[ㅋㅎ]{2,}|[ㅠㅜ]{2,}|[!?]{2,}|😊|😄|😢|😭|😡|❤️|👍|🙏')
+                emotions = []
+                for msg in session_df['message']:
+                    if isinstance(msg, str):
+                        if re.search(r'[ㅋㅎ]{2,}|😊|😄|👍|❤️', msg):
+                            emotions.append('긍정')
+                        elif re.search(r'[ㅠㅜ]{2,}|😢|😭|😡', msg):
+                            emotions.append('부정')
+                        elif re.search(r'[!?]{2,}', msg):
+                            emotions.append('강조')
+                
+                dominant_emotion = max(set(emotions), key=emotions.count) if emotions else '중립'
+                
+                conversation_flows.append({
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'duration_mins': round(duration, 1),
+                    'participants': participants,
+                    'message_count': msg_count,
+                    'intensity': round(intensity, 1),
+                    'keywords': keywords,
+                    'summary': summary,
+                    'emotion': dominant_emotion
+                })
+            
+            # 메시지 수 기준으로 정렬
+            return sorted(conversation_flows, key=lambda x: x['message_count'], reverse=True)
+            
+        except Exception as e:
+            st.error(f"대화 흐름 분석 중 오류 발생: {str(e)}")
+            return []
+    
+    # 캐시 키 생성 (데이터프레임의 처음과 마지막 메시지 시간으로)
+    data_key = f"{df['timestamp'].min()}_{df['timestamp'].max()}_{len(df)}"
+    
+    # 캐시된 분석 실행
+    return analyze_flows_cached(data_key, window_minutes, min_messages)
 
 def summarize_conversation(session_df: pd.DataFrame) -> dict:
     """대화 세션의 주요 내용 요약"""
@@ -1360,21 +1371,36 @@ def display_conversation_flows(df: pd.DataFrame):
     """대화 흐름 분석 결과 표시"""
     st.markdown("## 🌊 주요 대화 흐름")
     
+    # 세션 상태 초기화
+    if 'window_minutes' not in st.session_state:
+        st.session_state.window_minutes = 30
+    if 'min_messages' not in st.session_state:
+        st.session_state.min_messages = 10
+    
     # 분석 기준 설정
     col1, col2 = st.columns(2)
     with col1:
         window_minutes = st.slider("대화 구간 길이 (분)", 
                                  min_value=10, 
                                  max_value=60, 
-                                 value=30, 
-                                 step=5)
+                                 value=st.session_state.window_minutes, 
+                                 step=5,
+                                 key='window_slider')
     with col2:
         min_messages = st.slider("최소 메시지 수", 
                                min_value=5, 
                                max_value=30, 
-                               value=10, 
-                               step=5)
+                               value=st.session_state.min_messages, 
+                               step=5,
+                               key='messages_slider')
     
+    # 값이 변경되었을 때만 상태 업데이트
+    if window_minutes != st.session_state.window_minutes or min_messages != st.session_state.min_messages:
+        st.session_state.window_minutes = window_minutes
+        st.session_state.min_messages = min_messages
+        st.rerun()
+    
+    # 분석 실행
     flows = analyze_conversation_flows(df, window_minutes, min_messages)
     
     if not flows:
