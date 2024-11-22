@@ -8,11 +8,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
-from collections import defaultdict
+from collections import defaultdict, Counter  # Counter 추가
 import os
 import openai
 import networkx as nx
-from concurrent.futures import ThreadPoolExecutor
 import json
 
 
@@ -724,7 +723,6 @@ def analyze_chat_context(df: pd.DataFrame, target_names: list, my_name: str) -> 
         # 4. 대화 참여도 분석
         participation = df_sample['name'].value_counts().to_dict()
         
-        @st.cache_data(ttl=3600)
         def get_gpt_analysis(text_sample, stats, peak_hours, participation):
             try:
                 prompt = f"""
@@ -772,7 +770,7 @@ def analyze_chat_context(df: pd.DataFrame, target_names: list, my_name: str) -> 
                 ]
                 
                 response = openai.ChatCompletion.create(
-                    model="gpt-4",
+                    model="gpt-4o-mini",
                     messages=messages,
                     max_tokens=1500,
                     temperature=0.7,
@@ -1315,93 +1313,270 @@ def create_detailed_wordcloud(messages: pd.Series) -> plt.Figure:
         st.error(f"워드클라우드 생성 중 오류 발생: {str(e)}")
         return None
 
+# 새로운 분석 함수들
+def get_favorite_emojis(messages: pd.Series, top_k: int = 3) -> list:
+    """자주 사용하는 이모티콘 분석"""
+    emoji_pattern = re.compile(r'[😀-🙏🌀-🗿]+|[\u2600-\u26FF\u2700-\u27BF]')
+    emojis = []
+    for msg in messages:
+        if isinstance(msg, str):
+            emojis.extend(emoji_pattern.findall(msg))
+    return Counter(emojis).most_common(top_k)
+
+def get_frequent_words(messages: pd.Series, top_k: int = 5) -> list:
+    """자주 사용하는 단어 분석 (불용어 제외)"""
+    stopwords = set(['그래서', '나는', '지금', '그런데', '그리고', '그럼', '네', '예', '음', '아'])
+    words = []
+    for msg in messages:
+        if isinstance(msg, str):
+            words.extend([w for w in msg.split() if len(w) > 1 and w not in stopwords])
+    return Counter(words).most_common(top_k)
+
+def calculate_conversation_starter_ratio(df: pd.DataFrame, name: str) -> float:
+    """대화 시작 비율 계산"""
+    df = df.sort_values('timestamp')
+    conversation_gaps = df['timestamp'].diff() > pd.Timedelta(minutes=30)
+    conversation_starts = df[conversation_gaps]['name'] == name
+    return round(conversation_starts.sum() / conversation_gaps.sum() * 100, 1)
+
+def analyze_emotion_patterns(messages: pd.Series) -> dict:
+    """감정 표현 패턴 분석"""
+    patterns = {
+        '긍정': r'[ㅋㅎ]{2,}|😊|😄|😆|❤️|👍|좋아|감사|행복',
+        '부정': r'[ㅠㅜ]{2,}|😢|😭|😡|😱|슬퍼|힘들|짜증',
+        '놀람': r'[!?]{2,}|😮|😲|헐|대박|미쳤|실화',
+        '애정': r'❤️|🥰|😘|💕|사랑|보고싶|그리워'
+    }
+    
+    emotion_counts = {}
+    for emotion, pattern in patterns.items():
+        count = sum(1 for msg in messages if isinstance(msg, str) and re.search(pattern, msg))
+        if count > 0:
+            emotion_counts[emotion] = count
+            
+    total = sum(emotion_counts.values()) or 1
+    return {k: round(v/total * 100, 1) for k, v in emotion_counts.items()}
+
+def analyze_conversation_leadership(df: pd.DataFrame, name: str) -> float:
+    """대화 주도성 분석"""
+    user_msgs = df[df['name'] == name]
+    total_msgs = len(df)
+
+    starter_ratio = calculate_conversation_starter_ratio(df, name)
+    msg_ratio = len(user_msgs) / total_msgs * 100
+    question_pattern = r'[?？]'
+    question_ratio = sum(user_msgs['message'].str.contains(question_pattern, na=False)) / len(user_msgs) * 100
+    
+    leadership_score = (starter_ratio + msg_ratio + question_ratio) / 3
+    return round(leadership_score, 1)
+
+def analyze_humor_patterns(messages: pd.Series) -> str:
+    """유머 사용 패턴 분석"""
+    humor_patterns = {
+        '이모티콘 유머': r'[ㅋㅎ]{3,}|😆|🤣',
+        '드립': r'드립|개그|농담|장난',
+        '재치있는 표현': r'웃긴|재밌|웃음|재치'
+    }
+    
+    humor_counts = {k: sum(messages.str.contains(v, na=False)) for k, v in humor_patterns.items()}
+    total_msgs = len(messages)
+    
+    if sum(humor_counts.values()) / total_msgs < 0.1:
+        return "유머 사용 적음"
+    
+    main_humor = max(humor_counts.items(), key=lambda x: x[1])
+    return f"{main_humor[0]} 위주의 유머 사용 ({main_humor[1]}회)"
+
+def get_reaction_patterns(df: pd.DataFrame, name: str) -> str:
+    """반응 패턴 분석"""
+    user_responses = df[df['name'] == name]
+    quick_responses = sum(df['timestamp'].diff().dt.total_seconds() < 60)
+    
+    if len(user_responses) == 0:
+        return "반응 패턴 분석 불가"
+    
+    patterns = []
+    if quick_responses / len(user_responses) > 0.3:
+        patterns.append("빠른 반응")
+    if sum(user_responses['message'].str.contains(r'[ㅋㅎ]{2,}|[!?]{2,}', na=False)) / len(user_responses) > 0.3:
+        patterns.append("감정적 반응")
+    if sum(user_responses['message'].str.contains(r'그래요?|정말요?|진짜요?', na=False)) / len(user_responses) > 0.2:
+        patterns.append("공감적 반응")
+        
+    return ", ".join(patterns) if patterns else "일반적인 반응"
+
+def analyze_link_sharing(messages: pd.Series) -> str:
+    """링크 공유 성향 분석"""
+    link_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+    link_count = sum(messages.str.contains(link_pattern, na=False))
+    
+    if link_count == 0:
+        return "링크 공유 없음"
+    elif link_count < 5:
+        return f"가끔 링크 공유 ({link_count}회)"
+    else:
+        return f"활발한 정보 공유 ({link_count}회)"
+
+def analyze_question_patterns(messages: pd.Series) -> str:
+    """질문 패턴 분석"""
+    question_types = {
+        '일반 질문': r'\?|궁금|어때|할까',
+        '의견 요청': r'어떻게|어떨까|괜찮을까|좋을까',
+        '정보 요청': r'뭐|언제|어디|누구|얼마'
+    }
+    
+    type_counts = {k: sum(messages.str.contains(v, na=False)) for k, v in question_types.items()}
+    total = sum(type_counts.values())
+    
+    if total == 0:
+        return "질문 적음"
+    
+    main_type = max(type_counts.items(), key=lambda x: x[1])
+    return f"{main_type[0]} 위주 ({main_type[1]}회)"
 
 def analyze_personality_with_gpt(df: pd.DataFrame, name: str) -> dict:
-    """GPT 기반 성격 분석"""
+    """GPT를 활용한 사용자 성격 분석"""
     try:
-        # 사용자 메시지 추출 및 기본 통계 계산
-        user_df = df[df['name'] == name].copy()
-        messages = user_df['message'].dropna()
+        # 해당 사용자의 메시지만 추출
+        user_messages = df[df['name'] == name]['message'].tolist()
         
-        # 기본 통계
-        stats = {
-            "총_메시지": len(messages),
-            "평균_길이": round(messages.str.len().mean(), 1),
-            "이모티콘_비율": round(sum(messages.str.contains(r'[😊🤣😂😍🥰😘😅]', na=False)) / len(messages) * 100, 1),
-            "감정표현_비율": round(sum(messages.str.contains(r'[ㅋㅎㅠㅜ]{2,}', na=False)) / len(messages) * 100, 1)
+        # 분석을 위한 메시지 샘플링 (최근 100개)
+        sample_size = min(100, len(user_messages))
+        message_sample = user_messages[-sample_size:]
+        message_text = ' '.join([str(msg) for msg in message_sample if isinstance(msg, str)])
+
+        # 감정 표현 분석
+        emotion_pattern = re.compile(r'[ㅋㅎ]{2,}|[ㅠㅜ]{2,}|[!?]{2,}|😊|😄|😢|😭|😡|❤️|👍|🙏')
+        emotion_count = sum(1 for msg in message_sample if isinstance(msg, str) and emotion_pattern.search(msg))
+        emotion_ratio = emotion_count / sample_size if sample_size > 0 else 0
+
+        # 이모티콘 사용 분석
+        emoji_pattern = re.compile(r'[😀-🙏🌀-🗿]+|[\u2600-\u26FF\u2700-\u27BF]|\[이모티콘\]')
+        emoji_count = sum(len(emoji_pattern.findall(str(msg))) for msg in message_sample)
+        emoji_ratio = emoji_count / sample_size if sample_size > 0 else 0
+
+        # 자주 사용하는 단어 분석
+        words = []
+        stopwords = {'그래서', '나는', '지금', '그런데', '그리고', '그럼', '네', '예', '음', '아', 
+                    '저도', '근데', '저는', '제가', '좀', '이제', '그냥', '진짜', '아니', '그건'}
+        for msg in message_sample:
+            if isinstance(msg, str):
+                words.extend([word for word in msg.split() if len(word) > 1 and word not in stopwords])
+        word_counter = Counter(words)
+        frequent_words = word_counter.most_common(5)
+
+        # 질문 패턴 분석
+        question_pattern = re.compile(r'[?？]|어때|할까|뭐|언제|어디|누구')
+        question_count = sum(1 for msg in message_sample if isinstance(msg, str) and question_pattern.search(msg))
+        question_ratio = question_count / sample_size if sample_size > 0 else 0
+
+        # 대화 시작 비율 분석
+        df_sorted = df.sort_values('timestamp')
+        conversation_gaps = df_sorted['timestamp'].diff() > pd.Timedelta(minutes=30)
+        conversation_starts = df_sorted[conversation_gaps]
+        starter_count = sum(conversation_starts['name'] == name)
+        starter_ratio = starter_count / len(conversation_starts) if len(conversation_starts) > 0 else 0
+
+        # 메시지 길이 분석
+        msg_lengths = [len(str(msg)) for msg in message_sample]
+        avg_length = sum(msg_lengths) / len(msg_lengths) if msg_lengths else 0
+
+        # 성격 특성 점수 계산
+        personality_metrics = calculate_personality_metrics(message_text)
+        
+        # GPT 프롬프트용 메트릭스 구성
+        analysis_metrics = {
+            "감정표현비율": round(emotion_ratio * 100, 1),
+            "이모티콘비율": round(emoji_ratio * 100, 1),
+            "질문비율": round(question_ratio * 100, 1),
+            "대화시작비율": round(starter_ratio * 100, 1),
+            "평균메시지길이": round(avg_length, 1),
+            "자주쓰는단어": frequent_words
         }
 
-        # 메시지 패턴 분석
-        patterns = analyze_message_patterns(messages)
-        
-        # 응답 패턴 분석
-        response_patterns = analyze_response_patterns(df, name)
-
-        # GPT 프롬프트 구성
         prompt = f"""
-당신은 연예인 멘토이자 MBTI 전문가입니다! {name}님의 카톡 대화를 바탕으로 재미있는 성격 분석을 해주세요.
+당신은 20년 경력의 심리학 박사이자 대화 분석 전문가입니다. {name}님의 카카오톡 대화 데이터를 기반으로 심층적인 성격 분석을 진행해주세요.
 
-대화 패턴 데이터:
-{json.dumps(stats, ensure_ascii=False, indent=2)}
+[분석 데이터]
+1. 대화 패턴:
+- 대화 시작 비율: {analysis_metrics['대화시작비율']}% (높을수록 대화 주도적)
+- 질문 비율: {analysis_metrics['질문비율']}%
+- 평균 메시지 길이: {analysis_metrics['평균메시지길이']}자
+- 감정 표현 비율: {analysis_metrics['감정표현비율']}%
+- 이모티콘 사용 비율: {analysis_metrics['이모티콘비율']}%
 
-다음 항목들을 재미있게 분석해주세요:
+2. 자주 사용하는 단어 (상위 5개):
+{', '.join(f'{word}({count}회)' for word, count in analysis_metrics['자주쓰는단어'])}
 
-1. 🎭 캐릭터 프로필
-- 이 사람과 비슷한 드라마/영화 캐릭터는?
-- 캐릭터 선정 이유와 공통점
+3. 성격 특성 점수:
+{', '.join(f'{k}: {v}점' for k, v in personality_metrics.items())}
 
-2. 🎲 MBTI 추정
-- 예상되는 MBTI와 확신도
-- 각 지표별(E/I, S/N, T/F, J/P) 근거
-- 이 유형의 매력적인 특징
+[심층 분석 요청사항]
+1. 🎯 핵심 성격 특성 (구체적 근거 필수)
+- 대화 데이터에서 발견되는 가장 두드러진 성격적 특징 3가지를 구체적인 수치와 예시와 함께 설명해주세요
+- 각 특징이 대화에서 어떻게 구체적으로 드러나는지 실제 사용 패턴을 바탕으로 설명해주세요
+- 이 사람만의 독특한 매력 포인트를 대화 스타일에서 발견되는 특별한 점과 연결지어 설명해주세요
 
-3. 💝 관심사 & 취향
-- 자주 대화하는 TOP3 주제
-- 가장 열정적일 때의 대화 주제
+2. 🗣️ 의사소통 스타일 분석
+- 대화를 이끌어가는 특별한 방식이나 패턴
+- 감정과 생각을 표현할 때의 독특한 특징
+- 갈등이나 긴장 상황에서의 대처 방식
+- 유머나 위트의 사용 패턴과 그 효과
 
-4. ⚡ 대화 특징
-- 특별한 대화 매력 포인트
+3. 💝 관계 형성 방식
+- 친밀감을 표현하는 고유한 방법
+- 타인을 배려하거나 지지하는 특별한 패턴
+- 그룹 내에서의 역할과 영향력
+- 관계 유지에 있어서의 강점
 
-재미있게 분석해주되, 근거를 들어 설명해주세요!
+4. 🎭 MBTI 성향 추정
+- 외향성/내향성 (E/I): {analysis_metrics['대화시작비율']}%의 대화 시작 비율 등 참고
+- 감각/직관 (S/N): 구체적 표현과 추상적 표현의 비율 참고
+- 사고/감정 (T/F): {analysis_metrics['감정표현비율']}%의 감정 표현 비율 등 참고
+- 판단/인식 (J/P): 대화 패턴과 응답 스타일 참고
+
+5. 💡 잠재력과 발전 포인트
+- 현재 가장 잘 발휘되고 있는 강점
+- 더 개발하면 좋을 잠재적 재능
+- 대인관계에서의 특별한 영향력
+
+분석을 통해 {name}님의 진정한 매력과 특별한 가치가 잘 드러나도록 심층적이고 구체적인 분석을 부탁드립니다.
 """
 
-        # GPT 호출
-        messages_for_gpt = [
-            {"role": "system", "content": "당신은 MBTI 전문가이자 심리 삼당가입니다."},
+        messages = [
+            {"role": "system", "content": "당신은 심리학자이자 성격 분석 전문가입니다."},
             {"role": "user", "content": prompt}
         ]
         
         response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=messages_for_gpt,
-            max_tokens=1200,
-            temperature=0.8,
+            model="gpt-4",
+            messages=messages,
+            max_tokens=1500,
+            temperature=0.7,
             timeout=15
         )
 
-        # 성격 특성 점수 계산
-        message_text = ' '.join(messages.astype(str))
-        metrics = calculate_personality_metrics(message_text)
-        
         return {
-            "gpt_analysis": response.choices[0].message['content'],
-            "metrics": metrics
+            "name": name,
+            "metrics": personality_metrics,  # 성격 특성 점수
+            "analysis_metrics": analysis_metrics,  # 분석용 메트릭스
+            "gpt_analysis": response.choices[0].message['content']
         }
-
+        
     except Exception as e:
         st.error(f"성격 분석 중 오류 발생: {str(e)}")
-        return {"gpt_analysis": "분석 실패", "metrics": {}}
+        return None
 
 
 def calculate_personality_metrics(message_text: str) -> dict:
-    """성격 특성 종합 점수 계산"""
+    """성격 특성 점수 계산"""
     # 각 특성별 패턴 정의
     metrics_patterns = {
         "매력도": {
             "patterns": [
-                r'ㅋㅋ+|ㅎㅎ+|웃긴|재미|신기|멋지|굿|좋아',
+                r'ㅋㅋ|ㅎㅎ|웃긴|재미|신기|멋지',
                 r'센스|배려|친절|상냥|다정|착하',
-                r'😊|🤣|😂|😍|🥰|😘|😅|❤'
+                r'😊|🤣|😂|😍|🥰|😘|😅|❤|[이모티콘]'
             ],
             "weight": 1.2
         },
@@ -1415,7 +1590,7 @@ def calculate_personality_metrics(message_text: str) -> dict:
         },
         "활발도": {
             "patterns": [
-                r'하자|놀자|가자|먹자|보자|할까',
+                r'하자|가자|놀자|먹자|보자|할까',
                 r'신나|재밌|즐거|행복|좋아|대박',
                 r'\!+|\?+|ㅋ+|ㅎ+|~+'
             ],
@@ -1425,7 +1600,7 @@ def calculate_personality_metrics(message_text: str) -> dict:
             "patterns": [
                 r'좋아|행복|그립|보고싶|사랑|설레',
                 r'아름|예쁘|귀엽|멋지|근사|대단',
-                r'ㅠ+|ㅜ+|😢|😭|💕|❤'
+                r'ㅠㅠ|ㅜㅜ|😢|😭|💕|❤'
             ],
             "weight": 1.0
         },
@@ -1450,12 +1625,12 @@ def calculate_personality_metrics(message_text: str) -> dict:
                 matches = len(re.findall(pattern_group, message_text, re.IGNORECASE))
                 metric_score += min(100, matches * 5)
             except Exception as e:
-                st.warning(f"패턴 매칭 중 오류 발생: {pattern_group} - {str(e)}")
+                print(f"패턴 매칭 오류: {pattern_group} - {str(e)}")
                 continue
         
         # 패턴 그룹 수로 나누어 평균 계산
         avg_score = (metric_score / len(patterns)) * weight
-        scores[metric] = round(min(100, avg_score), 1)
+        scores[metric] = round(min(100, max(0, avg_score)), 1)
     
     return scores
 
@@ -1807,10 +1982,13 @@ def calculate_communication_level(results: dict) -> dict:
 
 def create_personality_radar_chart(metrics: dict) -> go.Figure:
     """성격 분석 레이더 차트"""
+    if not metrics:
+        return None
+        
     categories = list(metrics.keys())
     values = list(metrics.values())
     
-    # 귀여운 이모지 추가
+    # 귀여운 이모지와 함께 표시
     emoji_mapping = {
         "매력도": "💝 매력도",
         "친화력": "🤝 친화력",
@@ -1826,7 +2004,8 @@ def create_personality_radar_chart(metrics: dict) -> go.Figure:
         theta=emoji_categories,
         fill='toself',
         marker=dict(color='rgba(255, 105, 180, 0.7)'),
-        line=dict(color='rgb(255, 105, 180)')
+        line=dict(color='rgb(255, 105, 180)'),
+        name='성격 특성'
     ))
 
     fig.update_layout(
@@ -1844,6 +2023,7 @@ def create_personality_radar_chart(metrics: dict) -> go.Figure:
             ),
             bgcolor='rgba(0, 0, 0, 0)'
         ),
+        showlegend=False,
         paper_bgcolor='rgba(0, 0, 0, 0)',
         font=dict(color='white'),
         margin=dict(t=30, b=30)
@@ -1878,124 +2058,151 @@ def display_stat_metrics(title: str, metrics: dict, is_percentage: bool = False)
                 unsafe_allow_html=True
             )
 
-@st.cache_data
 def display_personality_analysis(df: pd.DataFrame, target_names: list):
     """성격 분석 결과 표시"""
-    st.markdown("## 🎭 성격 분석")
-    
-    # 기본 통계 계산
-    total_messages = len(df)
-    analysis_date = df['timestamp'].max().strftime("%Y년 %m월 %d일")
-    
-    st.markdown(f"""
-    <div style='text-align: right; color: rgba(255,255,255,0.6); margin-bottom: 20px;'>
-        분석 기준일: {analysis_date}<br>
-        총 분석 메시지: {total_messages:,}개
-    </div>
-    """, unsafe_allow_html=True)
+    try:
+        st.markdown("## 🎭 성격 분석")
+        
+        # 기본 통계 계산
+        total_messages = len(df)
+        analysis_date = df['timestamp'].max().strftime("%Y년 %m월 %d일")
+        
+        st.markdown(f"""
+        <div style='text-align: right; color: rgba(255,255,255,0.6); margin-bottom: 20px;'>
+            분석 기준일: {analysis_date}<br>
+            총 분석 메시지: {total_messages:,}개
+        </div>
+        """, unsafe_allow_html=True)
 
-    for name in target_names:
-        with st.spinner(f"{name}님의 성격 분석 중..."):
-            analysis = analyze_personality_with_gpt(df, name)
-            user_msgs = df[df['name'] == name]
-            msg_count = len(user_msgs)
-            avg_length = user_msgs['message'].str.len().mean()
-            
-            # 사용자 카드 컨테이너
-            with st.container():
-                st.markdown(f"""
-                <div style="
-                    background-color: rgba(45, 45, 45, 0.7);
-                    border-radius: 15px;
-                    padding: 20px;
-                    margin: 20px 0;
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                ">
+        for name in target_names:
+            with st.spinner(f"{name}님의 성격 분석 중..."):
+                # 성격 분석 실행
+                analysis_result = analyze_personality_with_gpt(df, name)
+                
+                if not analysis_result:
+                    st.error(f"{name}님의 성격 분석에 실패했습니다.")
+                    continue
+
+                user_msgs = df[df['name'] == name]
+                msg_count = len(user_msgs)
+                avg_length = user_msgs['message'].str.len().mean()
+                
+                # 사용자 카드 컨테이너
+                with st.container():
+                    st.markdown(f"""
                     <div style="
-                        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-                        margin-bottom: 15px;
-                        padding-bottom: 10px;
+                        background-color: rgba(45, 45, 45, 0.7);
+                        border-radius: 15px;
+                        padding: 20px;
+                        margin: 20px 0;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
                     ">
-                        <div style="color: #FF69B4; font-size: 24px; font-weight: bold;">
-                            👤 {name}
-                        </div>
-                        <div style="color: rgba(255, 255, 255, 0.7); font-size: 16px;">
-                            메시지 {msg_count:,}개 | 평균 {avg_length:.1f}자
+                        <div style="
+                            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                            margin-bottom: 15px;
+                            padding-bottom: 10px;
+                        ">
+                            <div style="color: #FF69B4; font-size: 24px; font-weight: bold;">
+                                👤 {name}
+                            </div>
+                            <div style="color: rgba(255, 255, 255, 0.7); font-size: 16px;">
+                                메시지 {msg_count:,}개 | 평균 {avg_length:.1f}자
+                            </div>
                         </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
 
-                # 주요 분석 컬럼
-                col1, col2 = st.columns([3, 2])
-                
-                with col1:
-                    with st.container():
+                    # 주요 분석 컬럼
+                    col1, col2 = st.columns([3, 2])
+                    
+                    with col1:
                         st.markdown("### 🎯 AI 성격 분석")
-                        st.markdown(analysis["gpt_analysis"])
+                        if "gpt_analysis" in analysis_result:
+                            st.markdown(analysis_result["gpt_analysis"])
+                        else:
+                            st.error("GPT 성격 분석을 불러올 수 없습니다.")
 
-                with col2:
-                    with st.container():
+                    with col2:
                         st.markdown("### ✨ 성격 특성 점수")
-                        if analysis["metrics"]:
-                            st.plotly_chart(
-                                create_personality_radar_chart(analysis["metrics"]),
-                                use_container_width=True
-                            )
+                        if "metrics" in analysis_result and analysis_result["metrics"]:
+                            # 레이더 차트 생성
+                            radar_chart = create_personality_radar_chart(analysis_result["metrics"])
+                            if radar_chart:
+                                st.plotly_chart(radar_chart, use_container_width=True)
+                            
                             # 성격 특성 점수 표시
-                            display_stat_metrics("", analysis["metrics"])
+                            for trait, score in analysis_result["metrics"].items():
+                                st.markdown(f"""
+                                <div style="
+                                    background-color: rgba(255, 105, 180, 0.1);
+                                    padding: 10px;
+                                    border-radius: 8px;
+                                    margin: 5px 0;
+                                    display: flex;
+                                    justify-content: space-between;
+                                    align-items: center;
+                                ">
+                                    <span>{trait}</span>
+                                    <span style="color: #FF69B4; font-weight: bold;">
+                                        {score}점
+                                    </span>
+                                </div>
+                                """, unsafe_allow_html=True)
                         else:
                             st.info("성격 특성 점수를 계산할 수 없습니다.")
 
-                # 추가 분석 컬럼
-                col3, col4 = st.columns(2)
-                
-                with col3:
-                    with st.container():
-                        st.markdown("### 💬 대화 패턴")
-                        response_times = calculate_response_patterns(df, name)
-                        if response_times:
-                            # 응답 시간 통계
-                            response_stats = {
-                                k: v for k, v in response_times.items() 
-                                if k != "활성_시간대" and isinstance(v, (int, float))
-                            }
-                            display_stat_metrics("응답 패턴", response_stats, True)
+                    # 추가 분석 컬럼
+                    if "analysis_metrics" in analysis_result:
+                        col3, col4 = st.columns(2)
+                        
+                        with col3:
+                            st.markdown("### 💬 대화 패턴")
+                            metrics = analysis_result["analysis_metrics"]
                             
-                            # 활성 시간대 표시
-                            st.markdown("**활동 시간대**")
-                            st.markdown(f"""
-                            <div style="
-                                background: rgba(255, 105, 180, 0.1);
-                                border-left: 3px solid #FF69B4;
-                                padding: 10px;
-                                margin: 10px 0;
-                                border-radius: 0 8px 8px 0;
-                                font-size: 16px;
-                                color: #FF69B4;
-                            ">
-                                {response_times['활성_시간대']}
-                            </div>
-                            """, unsafe_allow_html=True)
+                            for key in ["대화시작비율", "질문비율", "감정표현비율", "이모티콘비율"]:
+                                if key in metrics:
+                                    st.markdown(f"""
+                                    <div style="
+                                        background-color: rgba(255, 255, 255, 0.1);
+                                        padding: 10px;
+                                        border-radius: 8px;
+                                        margin: 5px 0;
+                                    ">
+                                        <div style="color: rgba(255, 255, 255, 0.7);">
+                                            {key.replace('비율', '')}
+                                        </div>
+                                        <div style="color: #FF69B4; font-size: 20px; font-weight: bold;">
+                                            {metrics[key]}%
+                                        </div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
 
-                with col4:
-                    with st.container():
-                        st.markdown("### 🎯 관심사 & 대화 스타일")
-                        patterns = analyze_message_patterns(user_msgs['message'])
-                        
-                        if patterns['interests']:
-                            sorted_interests = dict(sorted(
-                                patterns['interests'].items(), 
-                                key=lambda x: x[1], 
-                                reverse=True
-                            )[:4])
-                            display_stat_metrics("주요 관심사", sorted_interests, True)
-                        
-                        if patterns['style']:
-                            display_stat_metrics("대화 스타일", patterns['style'], True)
+                        with col4:
+                            st.markdown("### 🔍 주요 단어")
+                            if "자주쓰는단어" in metrics and metrics["자주쓰는단어"]:
+                                for word, count in metrics["자주쓰는단어"]:
+                                    st.markdown(f"""
+                                    <div style="
+                                        background-color: rgba(255, 255, 255, 0.1);
+                                        padding: 10px;
+                                        border-radius: 8px;
+                                        margin: 5px 0;
+                                        display: flex;
+                                        justify-content: space-between;
+                                    ">
+                                        <span>{word}</span>
+                                        <span style="color: #FF69B4;">{count}회</span>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                            else:
+                                st.info("주요 단어를 분석할 수 없습니다.")
 
-                st.markdown("<hr>", unsafe_allow_html=True)
+                    st.markdown("<hr>", unsafe_allow_html=True)
+
+    except Exception as e:
+        st.error(f"성격 분석 표시 중 오류 발생: {str(e)}")
+        print(f"Display error: {str(e)}")
 
 
 def calculate_response_patterns(df: pd.DataFrame, name: str) -> dict:
