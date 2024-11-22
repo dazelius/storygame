@@ -1403,9 +1403,9 @@ def display_conversation_flows(df: pd.DataFrame):
     
     # 분석 기준 설정 (세션 상태 유지)
     if 'window_minutes' not in st.session_state:
-        st.session_state.window_minutes = 30
+        st.session_state.window_minutes = 10
     if 'min_messages' not in st.session_state:
-        st.session_state.min_messages = 10
+        st.session_state.min_messages = 30
     
     col3, col4 = st.columns(2)
     with col3:
