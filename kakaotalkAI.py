@@ -1514,20 +1514,25 @@ def display_conversation_flows(df: pd.DataFrame):
         ):
             # 키워드 표시
             st.markdown("#### 📌 주요 키워드")
-            cols = st.columns(len(flow['keywords']))
-            for col, (word, count) in zip(cols, flow['keywords']):
-                col.markdown(f"""
-                <div style="
-                    background-color: rgba(255,105,180,0.1);
-                    padding: 10px;
-                    border-radius: 5px;
-                    text-align: center;
-                    margin: 5px 0;
-                ">
-                    <div style="font-size: 0.9em;">{word}</div>
-                    <div style="color: #FF69B4; font-weight: bold;">{count}회</div>
-                </div>
-                """, unsafe_allow_html=True)
+            if flow['keywords']:  # 키워드가 있는 경우에만 columns 생성
+                col_count = min(len(flow['keywords']), 5)  # 최대 5개 컬럼으로 제한
+                cols = st.columns(col_count)
+                for i, (word, count) in enumerate(flow['keywords']):
+                    if i < col_count:  # 컬럼 수 제한내에서만 표시
+                        cols[i].markdown(f"""
+                        <div style="
+                            background-color: rgba(255,105,180,0.1);
+                            padding: 10px;
+                            border-radius: 5px;
+                            text-align: center;
+                            margin: 5px 0;
+                        ">
+                            <div style="font-size: 0.9em;">{word}</div>
+                            <div style="color: #FF69B4; font-weight: bold;">{count}회</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.info("주요 키워드가 없습니다.")
             
             # 대화 요약
             if 'summary' in flow and flow['summary']:
