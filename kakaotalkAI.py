@@ -590,6 +590,210 @@ def create_wordcloud(messages: pd.Series) -> plt.Figure:
         ax.axis('off')
         return fig
 
+def analyze_key_topics(df: pd.DataFrame) -> dict:
+    """주요 안건 및 동향 분석"""
+    try:
+        # 시간 순으로 정렬
+        df = df.sort_values('timestamp')
+        
+        # 대화 세션 구분 (30분 이상 간격을 새로운 세션으로 간주)
+        df['time_diff'] = df['timestamp'].diff().dt.total_seconds()
+        df['session'] = (df['time_diff'] > 1800).cumsum()
+        
+        # 주요 키워드 패턴 정의
+        important_patterns = {
+            '일정/약속': [
+                r'언제\s*(만날|볼|할|하자|약속|시간|날짜)',
+                r'(다음|이번)\s*(주|달|월요일|화요일|수요일|목요일|금요일|토요일|일요일)',
+                r'(오전|오후)\s*\d+시',
+                r'미팅|회의|모임'
+            ],
+            '의사결정': [
+                r'어떻게\s*(할까|하지|해야|생각|의견)',
+                r'결정|선택|투표|찬성|반대|동의',
+                r'(이거|저거|그거)\s*(어때|괜찮|좋을)',
+                r'진행|방향|방안|예정'
+            ],
+            '정보공유': [
+                r'공유|전달|안내|알림|소식',
+                r'(이거|저거|그거)\s*(봐|읽어|확인)',
+                r'링크|url|기사|뉴스|정보',
+                r'https?://\S+'
+            ],
+            '이슈/문제': [
+                r'문제|이슈|상황|오류|버그',
+                r'(해결|처리|대응|조치).*필요',
+                r'(긴급|중요|심각|위험|주의)',
+                r'(어려움|장애|고장|실패)'
+            ],
+            '피드백': [
+                r'피드백|의견|후기|평가|리뷰',
+                r'(어땠|괜찮았|좋았|별로)',
+                r'개선|수정|보완|제안',
+                r'(장점|단점|문제점)'
+            ]
+        }
+
+        # 세션별 주요 토픽 분석
+        topics = []
+        
+        for session_id in df['session'].unique():
+            session_msgs = df[df['session'] == session_id]
+            
+            if len(session_msgs) < 3:  # 너무 짧은 세션 제외
+                continue
+            
+            session_text = ' '.join(session_msgs['message'].astype(str))
+            session_start = session_msgs['timestamp'].iloc[0]
+            participants = session_msgs['name'].nunique()
+            
+            # 주요 키워드 매칭
+            matched_topics = []
+            for topic, patterns in important_patterns.items():
+                for pattern in patterns:
+                    if re.search(pattern, session_text, re.IGNORECASE):
+                        matched_topics.append(topic)
+                        break
+            
+            if matched_topics:  # 매칭된 토픽이 있는 경우만 추가
+                # 세션의 주요 메시지 추출
+                key_messages = extract_key_messages(session_msgs)
+                
+                topics.append({
+                    'date': session_start.strftime('%Y-%m-%d'),
+                    'time': session_start.strftime('%H:%M'),
+                    'topics': list(set(matched_topics)),
+                    'participants': participants,
+                    'message_count': len(session_msgs),
+                    'key_messages': key_messages
+                })
+        
+        # 토픽별 통계
+        topic_stats = defaultdict(int)
+        for topic_data in topics:
+            for topic in topic_data['topics']:
+                topic_stats[topic] += 1
+        
+        return {
+            'topics': topics,
+            'stats': dict(topic_stats)
+        }
+        
+    except Exception as e:
+        st.error(f"토픽 분석 중 오류 발생: {str(e)}")
+        return {'topics': [], 'stats': {}}
+
+def extract_key_messages(session_msgs: pd.DataFrame, max_messages: int = 3) -> list:
+    """세션에서 주요 메시지 추출"""
+    try:
+        # 메시지 중요도 점수 계산
+        scores = []
+        for _, msg in session_msgs.iterrows():
+            score = 0
+            text = str(msg['message'])
+            
+            # 길이 가중치
+            score += min(len(text) / 10, 5)  # 최대 5점
+            
+            # 링크 포함
+            if 'http' in text:
+                score += 3
+            
+            # 특수문자/이모티콘 가중치
+            special_chars = sum(1 for c in text if not c.isalnum())
+            score += min(special_chars / 5, 2)
+            
+            # 질문/답변 패턴
+            if re.search(r'[?？]|어떻|할까|되나|인가|군요|네요', text):
+                score += 2
+            
+            scores.append((score, text, msg['name'], msg['timestamp']))
+        
+        # 상위 메시지 선택
+        top_messages = sorted(scores, key=lambda x: x[0], reverse=True)[:max_messages]
+        
+        return [{
+            'text': msg[1],
+            'name': msg[2],
+            'time': msg[3].strftime('%H:%M')
+        } for msg in top_messages]
+        
+    except Exception as e:
+        print(f"주요 메시지 추출 중 오류: {str(e)}")
+        return []
+
+def display_topic_analysis(df: pd.DataFrame):
+    """토픽 분석 결과 표시"""
+    analysis = analyze_key_topics(df)
+    
+    if not analysis['topics']:
+        st.warning("주요 안건을 찾을 수 없습니다.")
+        return
+    
+    st.markdown("## 📋 주요 안건 및 동향 분석")
+    
+    # 토픽 통계 시각화
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        if analysis['stats']:
+            stats_data = pd.DataFrame(
+                list(analysis['stats'].items()),
+                columns=['토픽', '빈도']
+            ).sort_values('빈도', ascending=True)
+            
+            fig = go.Figure(go.Bar(
+                x=stats_data['빈도'],
+                y=stats_data['토픽'],
+                orientation='h',
+                marker_color='rgba(255, 105, 180, 0.7)'
+            ))
+            
+            fig.update_layout(
+                title="토픽별 등장 빈도",
+                xaxis_title="등장 횟수",
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='white'),
+                margin=dict(l=10, r=10, t=40, b=10),
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.markdown("### 💡 주요 토픽")
+        for topic, count in sorted(analysis['stats'].items(), key=lambda x: x[1], reverse=True):
+            emoji_map = {
+                '일정/약속': '📅',
+                '의사결정': '🤔',
+                '정보공유': '📢',
+                '이슈/문제': '⚠️',
+                '피드백': '💬'
+            }
+            st.markdown(f"{emoji_map.get(topic, '•')} **{topic}**: {count}회")
+    
+    # 시간순 주요 안건 목록
+    st.markdown("### ⏱️ 시간순 주요 안건")
+    
+    for topic in analysis['topics']:
+        with st.expander(f"**{topic['date']} {topic['time']}** - {', '.join(topic['topics'])} (참여자 {topic['participants']}명)"):
+            for msg in topic['key_messages']:
+                st.markdown(f"""
+                <div style="
+                    background-color: rgba(255,255,255,0.1);
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin: 5px 0;
+                ">
+                    <div style="color: #FF69B4; font-size: 0.8em;">
+                        {msg['time']} - {msg['name']}
+                    </div>
+                    <div style="margin-top: 5px;">
+                        {msg['text']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
 
 def analyze_topics(df: pd.DataFrame) -> dict:
@@ -2697,6 +2901,10 @@ def main():
     st.title("💬 카톡 대화 분석기")
     st.markdown("### AI가 여러분의 카톡방을 분석해드려요! 🤖")
 
+    # OpenAI API 키 설정
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    openai.api_key = OPENAI_API_KEY
+
     with st.sidebar:
         st.markdown("""
         ### 📱 사용 방법
@@ -2726,7 +2934,20 @@ def main():
             df = parse_kakao_chat(chat_text)
         
         if len(df) > 0:
-            unique_names = df['name'].unique()
+            # 대화량 기준 상위 10명 추출
+            message_counts = df['name'].value_counts()
+            top_users = message_counts.head(10)
+            
+            # 대화 참여자 수에 따른 안내 메시지
+            total_users = len(message_counts)
+            if total_users > 10:
+                st.info(f"""
+                전체 참여자 {total_users}명 중 가장 활발한 상위 10명을 분석합니다.
+                
+                🏆 메시지 수 Top 10:
+                """ + "\n".join([f"- {name}: {count:,}개" for name, count in top_users.items()]))
+            
+            unique_names = top_users.index.tolist()
             
             # 참여자 선택
             col1, col2 = st.columns(2)
@@ -2737,19 +2958,24 @@ def main():
                 )
             with col2:
                 target_names = st.multiselect(
-                    "분석할 대상을 선택하세요 (여러 명 선택 가능)",
+                    "분석할 대상을 선택하세요 (최대 9명)",
                     options=[n for n in unique_names if n != my_name],
-                    default=[n for n in unique_names if n != my_name]
+                    default=[n for n in unique_names if n != my_name][:3],  # 기본값으로 상위 3명 선택
+                    max_selections=9  # 선택 가능한 최대 인원 제한
                 )
             
             if st.button("🔍 대화 분석 시작", use_container_width=True):
+                # 선택된 사용자들의 대화만 필터링
+                selected_users = [my_name] + target_names
+                filtered_df = df[df['name'].isin(selected_users)]
+                
                 with st.spinner("AI가 대화를 심층 분석중입니다..."):
                     # 1. 기본 통계
                     st.markdown("## 📊 대화방 기본 통계")
-                    date_range = (df['timestamp'].max() - df['timestamp'].min())
-                    total_duration = date_range.days + 1  # 최소 1일
-                    unique_dates = len(df['timestamp'].dt.date.unique())
-                    total_messages = len(df)
+                    date_range = (filtered_df['timestamp'].max() - filtered_df['timestamp'].min())
+                    total_duration = date_range.days + 1
+                    unique_dates = len(filtered_df['timestamp'].dt.date.unique())
+                    total_messages = len(filtered_df)
 
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -2766,17 +2992,17 @@ def main():
                             f"하루 평균 {daily_avg:.1f}개"
                         )
                     with col3:
-                        active_users = len([n for n in unique_names 
-                                        if len(df[df['name']==n]) > total_messages*0.1])
+                        selected_active_users = len([n for n in selected_users 
+                                        if len(filtered_df[filtered_df['name']==n]) > total_messages*0.1])
                         st.metric(
-                            "참여자 수",
-                            f"{len(unique_names)}명",
-                            f"활성 사용자 {active_users}명"
+                            "분석 대상",
+                            f"{len(selected_users)}명",
+                            f"활성 사용자 {selected_active_users}명"
                         )
                     
                     # 2. GPT 대화 분석
                     st.markdown("## 🤖 AI 대화 분석")
-                    analysis = analyze_chat_context(df, target_names, my_name)
+                    analysis = analyze_chat_context(filtered_df, target_names, my_name)
                     
                     if analysis:
                         tabs = st.tabs(["💡 전반적 분석", "👥 관계 분석", "📊 주제 분석", "📈 패턴 분석"])
@@ -2809,7 +3035,7 @@ def main():
                                     st.info("주제 분석 데이터를 불러올 수 없습니다.")
                             with col2:
                                 st.markdown("### 주요 키워드")
-                                wordcloud_fig = create_wordcloud(df['message'])
+                                wordcloud_fig = create_wordcloud(filtered_df['message'])
                                 if wordcloud_fig:
                                     st.pyplot(wordcloud_fig)
                                 else:
@@ -2818,20 +3044,20 @@ def main():
                         with tabs[3]:
                             st.markdown("### 시간대별 대화 패턴")
                             st.plotly_chart(
-                                create_time_pattern(df, target_names, my_name),
+                                create_time_pattern(filtered_df, target_names, my_name),
                                 use_container_width=True
                             )
                     
-                    # 3. 성격 분석 (새로 추가된 섹션)
+                    # 3. 성격 분석
                     st.markdown("## 🎭 성격 분석")
-                    display_personality_analysis(df, target_names)
+                    display_personality_analysis(filtered_df, target_names)
                     
                     # 4. 상세 분석
                     st.markdown("## 📱 상세 대화 분석")
                     
                     # 대화량 분석
                     st.markdown("### 💬 참여자별 대화량")
-                    conversation_stats = analyze_conversation_stats(df)
+                    conversation_stats = analyze_conversation_stats(filtered_df)
                     st.plotly_chart(
                         create_conversation_chart(conversation_stats),
                         use_container_width=True
@@ -2841,7 +3067,7 @@ def main():
                     st.markdown("### 😊 감정 분석")
                     col1, col2 = st.columns(2)
                     with col1:
-                        emotion_stats = analyze_emotions(df)
+                        emotion_stats = analyze_emotions(filtered_df)
                         st.plotly_chart(
                             create_emotion_chart(emotion_stats),
                             use_container_width=True
@@ -2849,13 +3075,14 @@ def main():
                     with col2:
                         st.markdown("#### 주요 감정 키워드")
                         try:
-                            emotion_cloud = create_detailed_wordcloud(df['message'])
+                            emotion_cloud = create_detailed_wordcloud(filtered_df['message'])
                             if emotion_cloud:
                                 st.pyplot(emotion_cloud)
                             else:
                                 st.info("워드클라우드를 생성할 수 없습니다. 대체 분석을 표시합니다.")
-                                # 대체 분석: 상위 감정 키워드 표시
-                                emotions = df['message'].str.findall(r'[ㅋㅎ]{2,}|[ㅠㅜ]{2,}|[!?]{2,}|😊|😄|😢|😭|😡|❤️|👍|🙏').explode()
+                                emotions = filtered_df['message'].str.findall(
+                                    r'[ㅋㅎ]{2,}|[ㅠㅜ]{2,}|[!?]{2,}|😊|😄|😢|😭|😡|❤️|👍|🙏'
+                                ).explode()
                                 top_emotions = emotions.value_counts().head(10)
                                 if not top_emotions.empty:
                                     st.write("가장 많이 사용된 감정 표현:")
@@ -2868,7 +3095,7 @@ def main():
                     
                     # 대화 하이라이트
                     st.markdown("## ✨ 대화 하이라이트")
-                    highlights = find_highlight_messages(df, target_names, my_name)
+                    highlights = find_highlight_messages(filtered_df, target_names, my_name)
                     
                     tabs = st.tabs(["💝 인상적인 대화", "🚀 활발한 토론", "⚡ 빠른 답장"])
                     with tabs[0]:
@@ -2894,6 +3121,10 @@ def main():
                     
                     # 5. AI 제안
                     display_suggestions(analysis)
+
+                    # 6. 주요 안건 분석
+                    st.markdown("---")
+                    display_topic_analysis(filtered_df)
                                         
         else:
             st.error("채팅 데이터를 파싱할 수 없습니다. 올바른 카카오톡 대화 파일인지 확인해주세요.")
