@@ -523,38 +523,21 @@ def analyze_keywords(messages: pd.Series) -> list:
 def create_wordcloud(messages: pd.Series) -> plt.Figure:
     """워드클라우드 생성"""
     try:
-        # 폰트 설치
-        os.system('apt-get update && apt-get install fonts-nanum fonts-nanum-coding fonts-nanum-extra -y')
-        
-        # 폰트 경로 찾기
-        font_dirs = [
-            '/usr/share/fonts/truetype/nanum',
-            '/usr/share/fonts',
-            '~/.local/share/fonts',
-            '/usr/local/share/fonts'
-        ]
-        
-        font_path = None
-        for font_dir in font_dirs:
-            if os.path.exists(f"{font_dir}/NanumGothic.ttf"):
-                font_path = f"{font_dir}/NanumGothic.ttf"
-                break
-        
-        if not font_path:
-            # 폰트 직접 다운로드
-            os.system('wget https://raw.githubusercontent.com/apparition47/NanumGothic/master/NanumGothic.ttf -P /tmp/')
-            font_path = '/tmp/NanumGothic.ttf'
-        
-        # matplotlib 폰트 설정
-        plt.rcParams['font.family'] = 'NanumGothic'
-        
         # 불용어 설정
-        stopwords = set(['그래서', '나는', '지금', 'https', 'www', 'naver', 'com', '샵검색', 'ㅇㅇ', '내가', '나도', '그런데', '하지만', '그리고', '그럼', '이제', '저기', '그게', '음', '아', '어', '응', '이모티콘', 'ㅋ', 'ㅋㅋ', 'ㅋㅋㅋ', 'ㅋㅋㅋㅋ', 'ㅎㅎ', 'ㄷㄷ', 'ㅎ','사진', '근데' , '일단' , '이제', '다들', '저거' ,'www', 'http', 'youtube', '삭제된 메시지입니다', '그리고', 
-                        '네', '예', '아직', '우리', '많이', '존나', 'ㅋㅋㅋㅋㅋ', '저도', '같은데', '그냥', '너무', '진짜', '다시', '오늘', '보면' 'ㅋㅋㅋㅋㅋㅋ', 'ㅋㅋㅋㅋㅋㅋㅋ', '근데', '저기', '이거', '그거', '요', '은', '는', '이', '가', '을', '를', '에', '와', '과'])
+        stopwords = set(['그래서', '나는', '지금', 'https', 'www', 'naver', 'com', '샵검색', 'ㅇㅇ', 
+                        '내가', '나도', '그런데', '하지만', '그리고', '그럼', '이제', '저기', '그게', 
+                        '음', '아', '어', '응', '이모티콘', 'ㅋ', 'ㅋㅋ', 'ㅋㅋㅋ', 'ㅋㅋㅋㅋ', 'ㅎㅎ', 
+                        'ㄷㄷ', 'ㅎ', '사진', '근데', '일단', '이제', '다들', '저거', 'www', 'http', 
+                        'youtube', '삭제된 메시지입니다', '그리고', '네', '예', '아직', '우리', '많이', 
+                        '존나', 'ㅋㅋㅋㅋㅋ', '저도', '같은데', '그냥', '너무', '진짜', '다시', '오늘', 
+                        '보면', 'ㅋㅋㅋㅋㅋㅋ', 'ㅋㅋㅋㅋㅋㅋㅋ', '근데', '저기', '이거', '그거', '요', 
+                        '은', '는', '이', '가', '을', '를', '에', '와', '과'])
         
-        # 워드클라우드 생성
+        # 텍스트 전처리
+        text = ' '.join(messages.dropna().astype(str))
+        
+        # 워드클라우드 생성 (폰트 경로 없이)
         wordcloud = WordCloud(
-            font_path=font_path,
             width=1200,
             height=600,
             background_color='black',
@@ -564,21 +547,19 @@ def create_wordcloud(messages: pd.Series) -> plt.Figure:
             min_font_size=10,
             random_state=42,
             stopwords=stopwords,
-            min_word_length=2,  # 최소 2글자 이상
+            min_word_length=2,
             normalize_plurals=False,
-            repeat=False
+            repeat=False,
+            font_path=None  # 기본 폰트 사용
         )
-        
-        # 텍스트 전처리
-        text = ' '.join(messages.dropna().astype(str))
         
         # 워드클라우드 생성
         wordcloud.generate(text)
         
         # 그림 생성
-        fig = plt.figure(figsize=(15, 8))
-        plt.imshow(wordcloud, interpolation='bilinear')
-        plt.axis('off')
+        fig, ax = plt.subplots(figsize=(15, 8))
+        ax.imshow(wordcloud, interpolation='bilinear')
+        ax.axis('off')
         plt.tight_layout(pad=0)
         
         return fig
@@ -586,11 +567,12 @@ def create_wordcloud(messages: pd.Series) -> plt.Figure:
     except Exception as e:
         st.error(f"워드클라우드 생성 중 오류: {str(e)}")
         # 에러 발생시 기본 차트 반환
-        fig = plt.figure(figsize=(15, 8))
-        plt.text(0.5, 0.5, '워드클라우드를 생성할 수 없습니다\n한글 폰트 설치가 필요합니다', 
-                ha='center', va='center')
-        plt.axis('off')
+        fig, ax = plt.subplots(figsize=(15, 8))
+        ax.text(0.5, 0.5, '워드클라우드를 생성할 수 없습니다.', 
+                ha='center', va='center', fontsize=14)
+        ax.axis('off')
         return fig
+
 
 def analyze_topics(df: pd.DataFrame) -> dict:
     """주제 분석 (최적화 버전)"""
