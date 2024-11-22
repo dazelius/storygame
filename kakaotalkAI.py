@@ -1229,6 +1229,280 @@ def find_highlight_messages(df: pd.DataFrame, target_names: list, my_name: str) 
             'quick_responses': []
         }
 
+
+def analyze_conversation_flows(df: pd.DataFrame, window_minutes: int = 30, min_messages: int = 10) -> list:
+    """대화 밀집도가 높은 구간의 대화 흐름 분석"""
+    try:
+        # 시간순 정렬
+        df = df.sort_values('timestamp')
+        
+        # 시간 윈도우 설정 (기본 30분)
+        window_td = pd.Timedelta(minutes=window_minutes)
+        
+        # 대화 세션 찾기
+        sessions = []
+        current_messages = []
+        session_start = df['timestamp'].iloc[0]
+        
+        for _, row in df.iterrows():
+            if row['timestamp'] - session_start <= window_td:
+                current_messages.append(row)
+            else:
+                if len(current_messages) >= min_messages:
+                    sessions.append(current_messages)
+                current_messages = [row]
+                session_start = row['timestamp']
+        
+        # 마지막 세션 처리
+        if len(current_messages) >= min_messages:
+            sessions.append(current_messages)
+        
+        # 각 세션 분석
+        conversation_flows = []
+        
+        for session_messages in sessions:
+            session_df = pd.DataFrame(session_messages)
+            
+            # 세션 정보 수집
+            start_time = session_df['timestamp'].min()
+            end_time = session_df['timestamp'].max()
+            duration = (end_time - start_time).total_seconds() / 60
+            participants = session_df['name'].nunique()
+            msg_count = len(session_df)
+            intensity = msg_count / duration  # 분당 메시지 수
+            
+            # 주요 키워드 추출
+            text = ' '.join(session_df['message'].astype(str))
+            words = text.split()
+            word_counter = Counter(words)
+            # 불용어 제거
+            stopwords = {'그래서', '나는', '지금', '그런데', '하지만', '그리고', '그럼', '네', '예', '음', '아', 
+                        '저도', '근데', '저는', '제가', '좀', '이제', '그냥', '진짜', '아니', '그건', '이거', 
+                        '그거', '뭐', '누가', '왜', '어디', '언제', '이제', '저희', '우리', '이런', '저런', 
+                        '이렇게', '저렇게', '[이모티콘]', '사진', '삭제된', '메시지입니다'}
+            keywords = [(word, count) for word, count in word_counter.most_common(5) 
+                       if word not in stopwords and len(word) > 1]
+            
+            # 대화 요약
+            summary = summarize_conversation(session_df)
+            
+            # 대화 분위기 분석
+            emotion_pattern = re.compile(r'[ㅋㅎ]{2,}|[ㅠㅜ]{2,}|[!?]{2,}|😊|😄|😢|😭|😡|❤️|👍|🙏')
+            emotions = []
+            for msg in session_df['message']:
+                if isinstance(msg, str):
+                    if re.search(r'[ㅋㅎ]{2,}|😊|😄|👍|❤️', msg):
+                        emotions.append('긍정')
+                    elif re.search(r'[ㅠㅜ]{2,}|😢|😭|😡', msg):
+                        emotions.append('부정')
+                    elif re.search(r'[!?]{2,}', msg):
+                        emotions.append('강조')
+            
+            dominant_emotion = max(set(emotions), key=emotions.count) if emotions else '중립'
+            
+            conversation_flows.append({
+                'start_time': start_time,
+                'end_time': end_time,
+                'duration_mins': round(duration, 1),
+                'participants': participants,
+                'message_count': msg_count,
+                'intensity': round(intensity, 1),
+                'keywords': keywords,
+                'summary': summary,
+                'emotion': dominant_emotion
+            })
+        
+        # 메시지 수 기준으로 정렬
+        return sorted(conversation_flows, key=lambda x: x['message_count'], reverse=True)
+        
+    except Exception as e:
+        st.error(f"대화 흐름 분석 중 오류 발생: {str(e)}")
+        return []
+
+def summarize_conversation(session_df: pd.DataFrame) -> dict:
+    """대화 세션의 주요 내용 요약"""
+    try:
+        # 대화 시작과 끝
+        first_msgs = session_df.head(3)  # 처음 3개 메시지
+        last_msgs = session_df.tail(3)   # 마지막 3개 메시지
+        
+        # 가장 긴 메시지 (논의 내용일 가능성 높음)
+        long_msgs = session_df[session_df['message'].str.len() > 50]
+        
+        # 질문과 응답
+        question_pattern = re.compile(r'[?？]|어떻|할까|되나|인가|ㅋㅋ[?？]')
+        questions = session_df[session_df['message'].str.contains(question_pattern, na=False)]
+        
+        return {
+            'start': [{'time': row['timestamp'].strftime('%H:%M'), 
+                      'name': row['name'], 
+                      'message': row['message']} 
+                     for _, row in first_msgs.iterrows()],
+            'end': [{'time': row['timestamp'].strftime('%H:%M'), 
+                    'name': row['name'], 
+                    'message': row['message']} 
+                   for _, row in last_msgs.iterrows()],
+            'key_points': [{'time': row['timestamp'].strftime('%H:%M'), 
+                          'name': row['name'], 
+                          'message': row['message']} 
+                         for _, row in long_msgs.iterrows()],
+            'questions': [{'time': row['timestamp'].strftime('%H:%M'), 
+                         'name': row['name'], 
+                         'message': row['message']} 
+                        for _, row in questions.iterrows()]
+        }
+        
+    except Exception as e:
+        print(f"대화 요약 중 오류: {str(e)}")
+        return {}
+
+def display_conversation_flows(df: pd.DataFrame):
+    """대화 흐름 분석 결과 표시"""
+    st.markdown("## 🌊 주요 대화 흐름")
+    
+    # 분석 기준 설정
+    col1, col2 = st.columns(2)
+    with col1:
+        window_minutes = st.slider("대화 구간 길이 (분)", 
+                                 min_value=10, 
+                                 max_value=60, 
+                                 value=30, 
+                                 step=5)
+    with col2:
+        min_messages = st.slider("최소 메시지 수", 
+                               min_value=5, 
+                               max_value=30, 
+                               value=10, 
+                               step=5)
+    
+    flows = analyze_conversation_flows(df, window_minutes, min_messages)
+    
+    if not flows:
+        st.info("분석할 대화 구간을 찾을 수 없습니다.")
+        return
+    
+    # 대화 밀집도 시각화
+    intensity_data = pd.DataFrame([{
+        'start_time': flow['start_time'],
+        'intensity': flow['intensity'],
+        'messages': flow['message_count']
+    } for flow in flows])
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=intensity_data['start_time'],
+        y=intensity_data['intensity'],
+        mode='markers',
+        marker=dict(
+            size=intensity_data['messages'] / 2,
+            color=intensity_data['intensity'],
+            colorscale='Viridis',
+            showscale=True,
+            colorbar=dict(title="분당 메시지 수")
+        ),
+        text=[f"메시지 수: {m}" for m in intensity_data['messages']],
+        hovertemplate="시간: %{x}<br>밀집도: %{y:.1f}/분<br>%{text}<extra></extra>"
+    ))
+    
+    fig.update_layout(
+        title="대화 밀집도 분포",
+        xaxis_title="시간",
+        yaxis_title="메시지 밀집도 (분당)",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='white')
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # 주요 대화 구간 표시
+    st.markdown("### 🎯 주요 대화 구간")
+    
+    for idx, flow in enumerate(flows, 1):
+        with st.expander(
+            f"**{flow['start_time'].strftime('%Y-%m-%d %H:%M')} ~ {flow['end_time'].strftime('%H:%M')}** "
+            f"({flow['duration_mins']}분 | {flow['message_count']}개 메시지 | {flow['participants']}명 참여)"):
+            
+            # 키워드 표시
+            st.markdown("#### 📌 주요 키워드")
+            keyword_cols = st.columns(len(flow['keywords']))
+            for col, (word, count) in zip(keyword_cols, flow['keywords']):
+                col.markdown(f"""
+                <div style="
+                    background-color: rgba(255,105,180,0.1);
+                    padding: 10px;
+                    border-radius: 5px;
+                    text-align: center;
+                ">
+                    <div style="font-size: 0.9em;">{word}</div>
+                    <div style="color: #FF69B4; font-weight: bold;">{count}회</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # 대화 흐름 요약
+            st.markdown("#### 💬 대화 흐름")
+            
+            # 시작 부분
+            st.markdown("**대화 시작**")
+            for msg in flow['summary']['start']:
+                st.markdown(f"""
+                <div style="
+                    padding: 5px 10px;
+                    margin: 2px 0;
+                    background-color: rgba(255,255,255,0.05);
+                    border-radius: 5px;
+                ">
+                    <span style="color: #FF69B4;">{msg['time']}</span> - 
+                    <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # 주요 포인트
+            if flow['summary']['key_points']:
+                st.markdown("**주요 논의**")
+                for msg in flow['summary']['key_points'][:3]:  # 상위 3개만
+                    st.markdown(f"""
+                    <div style="
+                        padding: 5px 10px;
+                        margin: 2px 0;
+                        background-color: rgba(255,255,255,0.1);
+                        border-radius: 5px;
+                    ">
+                        <span style="color: #FF69B4;">{msg['time']}</span> - 
+                        <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # 대화 마무리
+            st.markdown("**대화 마무리**")
+            for msg in flow['summary']['end']:
+                st.markdown(f"""
+                <div style="
+                    padding: 5px 10px;
+                    margin: 2px 0;
+                    background-color: rgba(255,255,255,0.05);
+                    border-radius: 5px;
+                ">
+                    <span style="color: #FF69B4;">{msg['time']}</span> - 
+                    <span style="color: #ADD8E6;">{msg['name']}</span>: {msg['message']}
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # 대화 분위기
+            st.markdown(f"""
+            <div style="
+                margin-top: 10px;
+                padding: 10px;
+                background-color: rgba(255,105,180,0.1);
+                border-radius: 5px;
+                text-align: center;
+            ">
+                <span style="font-size: 0.9em;">대화 분위기:</span>
+                <span style="font-weight: bold; color: #FF69B4;"> {flow['emotion']}</span>
+                <span style="font-size: 0.9em;"> (평균 {flow['intensity']:.1f}개/분)</span>
+            </div>
+            """, unsafe_allow_html=True)
+
 def analyze_conversation_stats(df: pd.DataFrame) -> dict:
     """참여자별 대화량 분석"""
     conversation_stats = df.groupby('name').size().to_dict()
@@ -2999,7 +3273,15 @@ def main():
                             f"{len(selected_users)}명",
                             f"활성 사용자 {selected_active_users}명"
                         )
-                    
+
+                    # 6. 주요 안건 분석
+                    st.markdown("---")
+                    display_topic_analysis(filtered_df)
+
+                    # 주요 대화 흐름 분석 추가
+                    st.markdown("---")
+                    display_conversation_flows(filtered_df)
+
                     # 2. GPT 대화 분석
                     st.markdown("## 🤖 AI 대화 분석")
                     analysis = analyze_chat_context(filtered_df, target_names, my_name)
@@ -3122,9 +3404,7 @@ def main():
                     # 5. AI 제안
                     display_suggestions(analysis)
 
-                    # 6. 주요 안건 분석
-                    st.markdown("---")
-                    display_topic_analysis(filtered_df)
+
                                         
         else:
             st.error("채팅 데이터를 파싱할 수 없습니다. 올바른 카카오톡 대화 파일인지 확인해주세요.")
