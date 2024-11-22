@@ -3380,14 +3380,6 @@ def main():
         2. 대화내용 내보내기 (.txt)
         3. 파일 업로드
         4. 분석 시작!
-        
-        ### 🔍 분석 항목
-        - 대화 맥락과 관계
-        - 주제별 분석
-        - 감정 분석
-        - 대화 패턴
-        - GPT 심층 분석
-        - 성격 분석
         """)
 
     # 파일 업로드
@@ -3397,6 +3389,7 @@ def main():
     )
     
     if chat_file:
+        # 1단계: 데이터 불러오기와 기본 통계
         with st.spinner("대화 내용을 불러오는 중..."):
             chat_text = chat_file.read().decode('utf-8')
             df = parse_kakao_chat(chat_text)
@@ -3428,178 +3421,122 @@ def main():
                 target_names = st.multiselect(
                     "분석할 대상을 선택하세요 (최대 9명)",
                     options=[n for n in unique_names if n != my_name],
-                    default=[n for n in unique_names if n != my_name][:3],  # 기본값으로 상위 3명 선택
-                    max_selections=9  # 선택 가능한 최대 인원 제한
+                    default=[n for n in unique_names if n != my_name][:3],
+                    max_selections=9
                 )
             
-            if st.button("🔍 대화 분석 시작", use_container_width=True):
-                # 선택된 사용자들의 대화만 필터링
-                selected_users = [my_name] + target_names
-                filtered_df = df[df['name'].isin(selected_users)]
-                
+            selected_users = [my_name] + target_names
+            filtered_df = df[df['name'].isin(selected_users)]
+
+            # 기본 통계와 대화 패턴 분석 (빠른 로딩)
+            st.markdown("## 📊 기본 통계")
+            
+            # 기간 선택
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input(
+                    "시작 날짜",
+                    value=filtered_df['date'].min(),
+                    min_value=filtered_df['date'].min(),
+                    max_value=filtered_df['date'].max()
+                )
+            with col2:
+                end_date = st.date_input(
+                    "종료 날짜",
+                    value=filtered_df['date'].max(),
+                    min_value=filtered_df['date'].min(),
+                    max_value=filtered_df['date'].max()
+                )
+
+            # 선택된 기간으로 데이터 필터링
+            date_filtered_df = filtered_df[
+                (filtered_df['date'] >= start_date) &
+                (filtered_df['date'] <= end_date)
+            ]
+
+            # 기본 통계 표시
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(
+                    "분석 기간",
+                    f"{(end_date - start_date).days + 1}일",
+                    f"전체 {len(date_filtered_df['date'].unique())}일"
+                )
+            with col2:
+                daily_avg = len(date_filtered_df) / ((end_date - start_date).days + 1)
+                st.metric(
+                    "총 메시지 수",
+                    f"{len(date_filtered_df):,}개",
+                    f"하루 평균 {daily_avg:.1f}개"
+                )
+            with col3:
+                st.metric(
+                    "참여자",
+                    f"{len(selected_users)}명",
+                    f"전체 {total_users}명 중"
+                )
+
+            # 대화 흐름 분석
+            st.markdown("## 🌊 대화 흐름 분석")
+            display_conversation_flows(date_filtered_df)
+
+            # AI 분석 시작 버튼
+            if st.button("🤖 AI 심층 분석 시작", use_container_width=True):
+                # 2단계: AI 기반 심층 분석
                 with st.spinner("AI가 대화를 심층 분석중입니다..."):
-                    # 1. 기본 통계
-                    st.markdown("## 📊 대화방 기본 통계")
-                    date_range = (filtered_df['timestamp'].max() - filtered_df['timestamp'].min())
-                    total_duration = date_range.days + 1
-                    unique_dates = len(filtered_df['timestamp'].dt.date.unique())
-                    total_messages = len(filtered_df)
-
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric(
-                            "총 대화 기간",
-                            f"{unique_dates}일",
-                            f"전체 {total_duration}일 중"
-                        )
-                    with col2:
-                        daily_avg = total_messages / unique_dates if unique_dates > 0 else total_messages
-                        st.metric(
-                            "총 메시지 수",
-                            f"{total_messages:,}개",
-                            f"하루 평균 {daily_avg:.1f}개"
-                        )
-                    with col3:
-                        selected_active_users = len([n for n in selected_users 
-                                        if len(filtered_df[filtered_df['name']==n]) > total_messages*0.1])
-                        st.metric(
-                            "분석 대상",
-                            f"{len(selected_users)}명",
-                            f"활성 사용자 {selected_active_users}명"
-                        )
-
-                    # 6. 주요 안건 분석
-                    st.markdown("---")
-                    display_topic_analysis(filtered_df)
-
-                    # 주요 대화 흐름 분석 추가
-                    st.markdown("---")
-                    display_conversation_flows(filtered_df)
-
-                    # 2. GPT 대화 분석
-                    st.markdown("## 🤖 AI 대화 분석")
-                    analysis = analyze_chat_context(filtered_df, target_names, my_name)
+                    analysis_tabs = st.tabs([
+                        "💡 GPT 분석", 
+                        "👥 관계 분석",
+                        "🎭 성격 분석",
+                        "😊 감정 분석",
+                        "✨ 하이라이트"
+                    ])
                     
-                    if analysis:
-                        tabs = st.tabs(["💡 전반적 분석", "👥 관계 분석", "📊 주제 분석", "📈 패턴 분석"])
-                        
-                        with tabs[0]:
-                            if 'gpt_analysis' in analysis:
-                                st.markdown(analysis['gpt_analysis'])
-                            else:
-                                st.info("GPT 분석 결과를 불러올 수 없습니다.")
-                        
-                        with tabs[1]:
-                            st.markdown("### 참여자 관계도")
-                            if 'relationships' in analysis:
-                                st.plotly_chart(
-                                    create_relationship_graph(analysis['relationships']),
-                                    use_container_width=True
-                                )
-                            else:
-                                st.info("관계 분석 데이터를 불러올 수 없습니다.")
-                        
-                        with tabs[2]:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if 'topics' in analysis:
-                                    st.plotly_chart(
-                                        create_topic_chart(analysis['topics']),
-                                        use_container_width=True
-                                    )
-                                else:
-                                    st.info("주제 분석 데이터를 불러올 수 없습니다.")
-                            with col2:
-                                st.markdown("### 주요 키워드")
-                                wordcloud_fig = create_wordcloud(filtered_df['message'])
-                                if wordcloud_fig:
-                                    st.pyplot(wordcloud_fig)
-                                else:
-                                    st.info("워드클라우드를 생성할 수 없습니다.")
-                        
-                        with tabs[3]:
-                            st.markdown("### 시간대별 대화 패턴")
+                    with analysis_tabs[0]:
+                        st.markdown("### GPT 대화 분석")
+                        analysis = analyze_chat_context(date_filtered_df, target_names, my_name)
+                        if 'gpt_analysis' in analysis:
+                            st.markdown(analysis['gpt_analysis'])
+                    
+                    with analysis_tabs[1]:
+                        st.markdown("### 참여자 관계도")
+                        if 'relationships' in analysis:
                             st.plotly_chart(
-                                create_time_pattern(filtered_df, target_names, my_name),
+                                create_relationship_graph(analysis['relationships']),
                                 use_container_width=True
                             )
                     
-                    # 3. 성격 분석
-                    st.markdown("## 🎭 성격 분석")
-                    display_personality_analysis(filtered_df, target_names)
+                    with analysis_tabs[2]:
+                        st.markdown("### 성격 분석")
+                        display_personality_analysis(date_filtered_df, target_names)
                     
-                    # 4. 상세 분석
-                    st.markdown("## 📱 상세 대화 분석")
+                    with analysis_tabs[3]:
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            emotion_stats = analyze_emotions(date_filtered_df)
+                            st.plotly_chart(
+                                create_emotion_chart(emotion_stats),
+                                use_container_width=True
+                            )
+                        with col2:
+                            wordcloud_fig = create_wordcloud(date_filtered_df['message'])
+                            if wordcloud_fig:
+                                st.pyplot(wordcloud_fig)
                     
-                    # 대화량 분석
-                    st.markdown("### 💬 참여자별 대화량")
-                    conversation_stats = analyze_conversation_stats(filtered_df)
-                    st.plotly_chart(
-                        create_conversation_chart(conversation_stats),
-                        use_container_width=True
-                    )
-                    
-                    # 감정 분석
-                    st.markdown("### 😊 감정 분석")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        emotion_stats = analyze_emotions(filtered_df)
-                        st.plotly_chart(
-                            create_emotion_chart(emotion_stats),
-                            use_container_width=True
-                        )
-                    with col2:
-                        st.markdown("#### 주요 감정 키워드")
-                        try:
-                            emotion_cloud = create_detailed_wordcloud(filtered_df['message'])
-                            if emotion_cloud:
-                                st.pyplot(emotion_cloud)
-                            else:
-                                st.info("워드클라우드를 생성할 수 없습니다. 대체 분석을 표시합니다.")
-                                emotions = filtered_df['message'].str.findall(
-                                    r'[ㅋㅎ]{2,}|[ㅠㅜ]{2,}|[!?]{2,}|😊|😄|😢|😭|😡|❤️|👍|🙏'
-                                ).explode()
-                                top_emotions = emotions.value_counts().head(10)
-                                if not top_emotions.empty:
-                                    st.write("가장 많이 사용된 감정 표현:")
-                                    for emotion, count in top_emotions.items():
-                                        st.write(f"- {emotion}: {count}회")
-                                else:
-                                    st.write("감정 표현을 찾을 수 없습니다.")
-                        except Exception as e:
-                            st.error(f"감정 분석 표시 중 오류 발생: {str(e)}")
-                    
-                    # 대화 하이라이트
-                    st.markdown("## ✨ 대화 하이라이트")
-                    highlights = find_highlight_messages(filtered_df, target_names, my_name)
-                    
-                    tabs = st.tabs(["💝 인상적인 대화", "🚀 활발한 토론", "⚡ 빠른 답장"])
-                    with tabs[0]:
-                        if highlights and 'emotional_messages' in highlights:
-                            for msg in highlights['emotional_messages']:
-                                st.info(f"{msg['timestamp'].strftime('%Y-%m-%d %H:%M')} - {msg['name']}: {msg['message']}")
-                        else:
-                            st.write("인상적인 대화를 찾을 수 없습니다.")
+                    with analysis_tabs[4]:
+                        highlights = find_highlight_messages(date_filtered_df, target_names, my_name)
+                        highlight_tabs = st.tabs(["💝 인상적인 대화", "🚀 활발한 토론", "⚡ 빠른 답장"])
+                        
+                        for tab, category in zip(highlight_tabs, ['emotional_messages', 'discussion_messages', 'quick_responses']):
+                            with tab:
+                                if highlights and category in highlights:
+                                    for msg in highlights[category]:
+                                        st.info(f"{msg['timestamp'].strftime('%Y-%m-%d %H:%M')} - {msg['name']}: {msg['message']}")
 
-                    with tabs[1]:
-                        if highlights and 'discussion_messages' in highlights:
-                            for msg in highlights['discussion_messages']:
-                                st.info(f"{msg['timestamp'].strftime('%Y-%m-%d %H:%M')} - {msg['name']}: {msg['message']}")
-                        else:
-                            st.write("활발한 토론을 찾을 수 없습니다.")
-
-                    with tabs[2]:
-                        if highlights and 'quick_responses' in highlights:
-                            for msg in highlights['quick_responses']:
-                                st.info(f"{msg['timestamp'].strftime('%Y-%m-%d %H:%M')} - {msg['name']}: {msg['message']}")
-                        else:
-                            st.write("빠른 답장을 찾을 수 없습니다.")
-                    
-                    # 5. AI 제안
+                    # AI 제안 표시
+                    st.markdown("---")
                     display_suggestions(analysis)
-
-
-                                        
+                        
         else:
             st.error("채팅 데이터를 파싱할 수 없습니다. 올바른 카카오톡 대화 파일인지 확인해주세요.")
 
