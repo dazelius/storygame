@@ -1156,6 +1156,77 @@ def analyze_time_overlap(df: pd.DataFrame, name1: str, name2: str) -> float:
     
     return overlap / total if total > 0 else 0
 
+def parse_kakao_chat(text: str) -> pd.DataFrame:
+    """카카오톡 채팅 내용 파싱"""
+    lines = text.split('\n')
+    chat_data = []
+    current_date = None
+    
+    # 날짜 구분선 패턴: --------------- YYYY년 M월 D일 요일 ---------------
+    date_pattern = r'-+ (\d{4})년 (\d{1,2})월 (\d{1,2})일 \w요일 -+'
+    
+    # 카톡 메시지 패턴: [이름] [시간] 메시지
+    message_pattern = r'\[(.*?)\]\s\[(오전|오후)\s(\d{1,2}):(\d{2})\]\s(.*)'
+    
+    for line in lines:
+        # 날짜 구분선 확인
+        date_match = re.match(date_pattern, line)
+        if date_match:
+            year = int(date_match.group(1))
+            month = int(date_match.group(2))
+            day = int(date_match.group(3))
+            current_date = datetime(year, month, day)
+            continue
+        
+        # 메시지 파싱
+        message_match = re.search(message_pattern, line)
+        if message_match and current_date:
+            name = message_match.group(1)
+            am_pm = message_match.group(2)
+            hour = int(message_match.group(3))
+            minute = int(message_match.group(4))
+            message = message_match.group(5)
+            
+            # 시간 변환
+            if am_pm == "오후" and hour != 12:
+                hour += 12
+            elif am_pm == "오전" and hour == 12:
+                hour = 0
+                
+            # 날짜와 시간 결합
+            timestamp = current_date.replace(
+                hour=hour, 
+                minute=minute,
+                second=0,
+                microsecond=0
+            )
+            
+            chat_data.append({
+                'timestamp': timestamp,
+                'name': name,
+                'message': message,
+                'date': current_date.date()  # 날짜만 따로 저장
+            })
+    
+    if not chat_data:
+        st.error("채팅 데이터를 파싱할 수 없습니다. 올바른 카카오톡 대화 파일인지 확인해주세요.")
+        return pd.DataFrame(columns=['timestamp', 'name', 'message', 'date'])
+        
+    df = pd.DataFrame(chat_data)
+    
+    # 날짜 범위 정보 표시
+    date_range = (df['date'].min(), df['date'].max())
+    total_days = (date_range[1] - date_range[0]).days + 1
+    
+    st.info(f"""
+        💬 분석할 대화 기간: {date_range[0]} ~ {date_range[1]} (총 {total_days}일)
+        ✉️ 총 메시지 수: {len(df):,}개
+        👥 참여자 수: {df['name'].nunique()}명
+    """)
+    
+    return df
+
+
 def find_highlight_messages(df: pd.DataFrame, target_names: list, my_name: str) -> dict:
     """인상적인 대화 찾기"""
     try:
@@ -1373,7 +1444,7 @@ def display_conversation_flows(df: pd.DataFrame):
     
     # 초기 데이터 범위 설정
     if 'date_range' not in st.session_state:
-        date_range = [df['timestamp'].min(), df['timestamp'].max()]
+        date_range = [df['date'].min(), df['date'].max()]
         st.session_state.date_range = date_range
     
     # 시간 범위 선택기
@@ -1381,19 +1452,44 @@ def display_conversation_flows(df: pd.DataFrame):
     with col1:
         start_date = st.date_input(
             "시작 날짜",
-            value=st.session_state.date_range[0].date(),
-            min_value=df['timestamp'].min().date(),
-            max_value=df['timestamp'].max().date(),
+            value=st.session_state.date_range[0],
+            min_value=df['date'].min(),
+            max_value=df['date'].max(),
             key='start_date'
         )
     with col2:
         end_date = st.date_input(
             "종료 날짜",
-            value=st.session_state.date_range[1].date(),
-            min_value=df['timestamp'].min().date(),
-            max_value=df['timestamp'].max().date(),
+            value=st.session_state.date_range[1],
+            min_value=df['date'].min(),
+            max_value=df['date'].max(),
             key='end_date'
         )
+    
+    # 시간 범위로 데이터 필터링
+    filtered_df = df[
+        (df['date'] >= start_date) &
+        (df['date'] <= end_date)
+    ]
+    
+    # 선택된 기간의 데이터 통계 표시
+    msg_count = len(filtered_df)
+    participant_count = filtered_df['name'].nunique()
+    days_count = (end_date - start_date).days + 1
+    
+    st.markdown(f"""
+    <div style="
+        padding: 10px;
+        background-color: rgba(255,105,180,0.1);
+        border-radius: 5px;
+        margin: 10px 0;
+        text-align: center;
+    ">
+        📅 <b>선택 기간</b>: {days_count}일 &nbsp;|&nbsp; 
+        ✉️ <b>메시지</b>: {msg_count:,}개 &nbsp;|&nbsp; 
+        👥 <b>참여자</b>: {participant_count}명
+    </div>
+    """, unsafe_allow_html=True)
     
     # 시간 범위로 데이터 필터링
     filtered_df = df[
