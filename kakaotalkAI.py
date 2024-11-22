@@ -523,6 +523,18 @@ def analyze_keywords(messages: pd.Series) -> list:
 def create_wordcloud(messages: pd.Series) -> plt.Figure:
     """워드클라우드 생성"""
     try:
+        # 임시 폰트 파일 경로
+        font_path = '/tmp/NanumGothic.ttf'
+        
+        # 폰트 파일이 없으면 다운로드
+        if not os.path.exists(font_path):
+            import urllib.request
+            font_url = "https://raw.githubusercontent.com/apparition47/NanumGothic/master/NanumGothic.ttf"
+            urllib.request.urlretrieve(font_url, font_path)
+        
+        # matplotlib 폰트 설정
+        plt.rcParams['font.family'] = 'NanumGothic'
+        
         # 불용어 설정
         stopwords = set(['그래서', '나는', '지금', 'https', 'www', 'naver', 'com', '샵검색', 'ㅇㅇ', 
                         '내가', '나도', '그런데', '하지만', '그리고', '그럼', '이제', '저기', '그게', 
@@ -531,13 +543,16 @@ def create_wordcloud(messages: pd.Series) -> plt.Figure:
                         'youtube', '삭제된 메시지입니다', '그리고', '네', '예', '아직', '우리', '많이', 
                         '존나', 'ㅋㅋㅋㅋㅋ', '저도', '같은데', '그냥', '너무', '진짜', '다시', '오늘', 
                         '보면', 'ㅋㅋㅋㅋㅋㅋ', 'ㅋㅋㅋㅋㅋㅋㅋ', '근데', '저기', '이거', '그거', '요', 
-                        '은', '는', '이', '가', '을', '를', '에', '와', '과'])
+                        '은', '는', '이', '가', '을', '를', '에', '와', '과', '구나', '한테', '에서',
+                        '으로', '라고', '이제', '저희', '제가', '제', '더', '안', '못', '왜', '뭐',
+                        '그래', '저도', '건데', '요즘', '누가', '어디', '이번', '다음', '이거', '그거'])
         
         # 텍스트 전처리
         text = ' '.join(messages.dropna().astype(str))
         
-        # 워드클라우드 생성 (폰트 경로 없이)
+        # 워드클라우드 생성
         wordcloud = WordCloud(
+            font_path=font_path,
             width=1200,
             height=600,
             background_color='black',
@@ -550,11 +565,13 @@ def create_wordcloud(messages: pd.Series) -> plt.Figure:
             min_word_length=2,
             normalize_plurals=False,
             repeat=False,
-            font_path=None  # 기본 폰트 사용
+            relative_scaling=0.3,
+            collocations=False,  # 단어 조합 비활성화
+            mode='RGBA'
         )
         
         # 워드클라우드 생성
-        wordcloud.generate(text)
+        wordcloud.generate_from_text(text)
         
         # 그림 생성
         fig, ax = plt.subplots(figsize=(15, 8))
@@ -568,10 +585,11 @@ def create_wordcloud(messages: pd.Series) -> plt.Figure:
         st.error(f"워드클라우드 생성 중 오류: {str(e)}")
         # 에러 발생시 기본 차트 반환
         fig, ax = plt.subplots(figsize=(15, 8))
-        ax.text(0.5, 0.5, '워드클라우드를 생성할 수 없습니다.', 
+        ax.text(0.5, 0.5, '워드클라우드를 생성할 수 없습니다\n한글 폰트 설치가 필요합니다', 
                 ha='center', va='center', fontsize=14)
         ax.axis('off')
         return fig
+
 
 
 def analyze_topics(df: pd.DataFrame) -> dict:
