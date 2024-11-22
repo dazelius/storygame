@@ -1,1 +1,12 @@
 streamlit
+pandas
+numpy
+datetime
+time
+re
+plotly-express
+plotly-graph-objects
+wordcloud
+matplotlib
+networkx
+openai
